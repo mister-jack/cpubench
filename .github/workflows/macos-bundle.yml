@@ -1,0 +1,246 @@
+name: macOS arm64 bundle
+
+# Builds a self-contained folder for Apple Silicon Macs: standalone Python with
+# the locked packages (via uv), a static ffmpeg with libx264, and the scripts.
+# The result is uploaded as a workflow artifact, and attached to the GitHub
+# release when the run was started by a v* tag.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+  FFMPEG_VERSION: "8.1.3"
+  # x264 has no releases; this is the tip of its "stable" branch.
+  X264_COMMIT: b35605ace3ddf7c1a5d67a2eb553f034aef41d55
+  # Oldest macOS the bundle runs on (11.0 is the first Apple Silicon release).
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+jobs:
+  bundle:
+    runs-on: macos-15 # Apple Silicon runner
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the runner is arm64
+        run: |
+          test "$(uname -m)" = arm64
+          sw_vers
+
+      # ---------------------------------------------------------------- ffmpeg
+      - name: Cache ffmpeg build
+        id: ffmpeg-cache
+        uses: actions/cache@v6
+        with:
+          path: build/ffmpeg-out
+          key: ffmpeg-arm64-${{ env.FFMPEG_VERSION }}-x264-${{ env.X264_COMMIT }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}-v1
+
+      - name: Build static x264 and ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euxo pipefail
+          command -v pkg-config >/dev/null || brew install pkgconf
+          root="$PWD/build"
+          prefix="$root/prefix"
+          mkdir -p "$root/src" "$root/ffmpeg-out"
+          jobs=$(sysctl -n hw.ncpu)
+
+          # x264 (static library only)
+          git init -q "$root/src/x264"
+          git -C "$root/src/x264" fetch -q --depth 1 https://code.videolan.org/videolan/x264.git "$X264_COMMIT"
+          git -C "$root/src/x264" checkout -q FETCH_HEAD
+          (
+            cd "$root/src/x264"
+            ./configure --prefix="$prefix" --enable-static --enable-pic --disable-cli
+            make -j"$jobs"
+            make install
+          )
+
+          # ffmpeg: only what the scripts use (lavfi test source -> libx264 -> null).
+          # --disable-autodetect keeps Homebrew libraries on the runner out of the
+          # binary, so it depends on nothing but macOS itself.
+          curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" -o "$root/src/ffmpeg.tar.xz"
+          mkdir "$root/src/ffmpeg"
+          tar -xf "$root/src/ffmpeg.tar.xz" -C "$root/src/ffmpeg" --strip-components 1
+          (
+            cd "$root/src/ffmpeg"
+            PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure \
+              --prefix="$prefix" \
+              --arch=arm64 \
+              --enable-gpl --enable-libx264 \
+              --enable-static --disable-shared \
+              --pkg-config-flags=--static \
+              --disable-autodetect \
+              --disable-doc --disable-debug \
+              --disable-ffplay --disable-ffprobe \
+              --disable-network --disable-indevs --disable-outdevs
+            make -j"$jobs"
+          )
+          cp "$root/src/ffmpeg/ffmpeg" "$root/ffmpeg-out/ffmpeg"
+          strip "$root/ffmpeg-out/ffmpeg"
+          # strip invalidates the linker's ad-hoc signature; arm64 Macs refuse
+          # to run unsigned code, so sign again.
+          codesign --force --sign - "$root/ffmpeg-out/ffmpeg"
+
+      - name: Check ffmpeg
+        run: |
+          set -euxo pipefail
+          ff=build/ffmpeg-out/ffmpeg
+          file "$ff" | grep -q arm64
+          "$ff" -hide_banner -version
+          "$ff" -hide_banner -encoders | grep -q libx264
+          otool -L "$ff"
+          # Fail if it links anything outside macOS itself (e.g. a Homebrew dylib).
+          if otool -L "$ff" | tail -n +2 | awk '{print $1}' | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+            echo "::error::ffmpeg links a library that is not part of macOS"
+            exit 1
+          fi
+
+      # ---------------------------------------------------------------- python
+      - uses: astral-sh/setup-uv@v10
+        with:
+          enable-cache: true
+
+      - name: Standalone Python with the locked packages
+        run: |
+          set -euxo pipefail
+          bundle="$PWD/dist/cpubench-macos-arm64"
+          mkdir -p "$bundle"
+
+          # uv downloads a relocatable python-build-standalone CPython.
+          export UV_PYTHON_INSTALL_DIR="$PWD/build/uv-python"
+          uv python install "$PYTHON_VERSION"
+          py=$(uv python find --managed-python "$PYTHON_VERSION")
+          home=$("$py" -c 'import os, sys; print(os.path.realpath(sys.base_prefix))')
+          cp -R "$home" "$bundle/python"
+          test -x "$bundle/python/bin/python3"
+
+          # Install exactly what uv.lock pins, straight into that interpreter
+          # (a venv would hard-code this runner's paths). The copy carries uv's
+          # "externally managed" marker, hence --break-system-packages.
+          uv export --frozen --no-emit-project --no-dev -o build/requirements.txt
+          # --python-platform with MACOSX_DEPLOYMENT_TARGET picks wheels built for
+          # the minimum macOS rather than for this runner's newer one (numpy
+          # ships both an 11.0 and a 14.0 wheel).
+          uv pip install \
+            --python "$bundle/python/bin/python3" \
+            --python-platform aarch64-apple-darwin \
+            --break-system-packages \
+            --link-mode copy \
+            --compile-bytecode \
+            --require-hashes \
+            -r build/requirements.txt
+
+          file "$bundle/python/bin/python3" | grep -q arm64
+
+      # ---------------------------------------------------------------- bundle
+      - name: Assemble bundle
+        run: |
+          set -euxo pipefail
+          bundle="$PWD/dist/cpubench-macos-arm64"
+          mkdir -p "$bundle/bin"
+          cp build/ffmpeg-out/ffmpeg "$bundle/bin/ffmpeg"
+          cp mac_stress_test.py app_monitor_share.py ffmpeg_hour_test.py README.md "$bundle/"
+          cp ci/BUNDLE_README.txt "$bundle/BUNDLE_README.txt"
+          for name in stress-test app-monitor ffmpeg-hour-test; do
+            cp ci/launcher.sh "$bundle/$name"
+            chmod 755 "$bundle/$name"
+          done
+          chmod 755 "$bundle/bin/ffmpeg"
+          {
+            echo "cpubench commit: $GITHUB_SHA ($GITHUB_REF_NAME)"
+            echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(sw_vers -productName) $(sw_vers -productVersion) $(uname -m)"
+            echo "minimum macOS: $MACOSX_DEPLOYMENT_TARGET"
+            echo "python: $("$bundle/python/bin/python3" -c 'import sys; print(sys.version)')"
+            echo "ffmpeg: $("$bundle/bin/ffmpeg" -hide_banner -version | head -n 1)"
+            echo "x264: commit $X264_COMMIT"
+            echo
+            echo "python packages:"
+            uv pip list --python "$bundle/python/bin/python3" | sed 's/^/  /'
+          } > "$bundle/VERSIONS.txt"
+          cat "$bundle/VERSIONS.txt"
+
+      - name: Smoke test from a different location
+        run: |
+          set -euxo pipefail
+          # Move the bundle and hide the runner's own tools, so the test proves
+          # it is relocatable and uses only what it ships.
+          test_root=$(mktemp -d)
+          cp -R dist/cpubench-macos-arm64 "$test_root/moved bundle"
+          cd "$test_root"
+          export PATH=/usr/bin:/bin:/usr/sbin:/sbin
+          unset PYTHONPATH PYTHONHOME VIRTUAL_ENV
+
+          "./moved bundle/stress-test" --check
+          "./moved bundle/app-monitor" --help >/dev/null
+          "./moved bundle/python/bin/python3" -c 'import shutil; p = shutil.which("ffmpeg"); assert p is None, p'
+
+          # A real, short run: 5 s idle, 20 s of one encode, then graphs.
+          "./moved bundle/stress-test" --warmup 5 --duration 20 --encodes 1 --out "$test_root/results"
+          ls -l "$test_root"/results/*/
+          for f in chart.png chart_cores.png data.csv summary.txt; do
+            test -s "$test_root"/results/*/"$f"
+          done
+          cat "$test_root"/results/*/summary.txt
+          mkdir -p "$GITHUB_WORKSPACE/dist/smoke-test"
+          cp "$test_root"/results/*/* "$GITHUB_WORKSPACE/dist/smoke-test/"
+
+      - name: Pack
+        id: pack
+        run: |
+          set -euxo pipefail
+          cd dist
+          name="cpubench-macos-arm64-${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}"
+          # tar, not the artifact's own zip: zip drops the executable bits and
+          # the symlinks inside python/.
+          tar -czf "$name.tar.gz" cpubench-macos-arm64
+          shasum -a 256 "$name.tar.gz" | tee "$name.tar.gz.sha256"
+          ls -lh "$name.tar.gz"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.pack.outputs.name }}
+          path: |
+            dist/${{ steps.pack.outputs.name }}.tar.gz
+            dist/${{ steps.pack.outputs.name }}.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0 # already gzipped
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: smoke-test-results
+          path: dist/smoke-test
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: bundle
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: cpubench-macos-arm64-*
+          merge-multiple: true
+          path: dist
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
