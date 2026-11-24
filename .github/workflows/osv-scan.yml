@@ -1,0 +1,31 @@
+name: OSV-Scanner (uv.lock)
+
+# Checks the Python packages pinned in uv.lock (the ones shipped in the macOS
+# bundle) against Google's OSV vulnerability database. Fails if any pinned
+# version has a known vulnerability; findings also appear under
+# Security > Code scanning.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [uv.lock, pyproject.toml, .github/workflows/osv-scan.yml]
+  pull_request:
+    paths: [uv.lock, pyproject.toml, .github/workflows/osv-scan.yml]
+  schedule:
+    # Weekly: new advisories get published against versions that are already locked.
+    - cron: "17 3 * * 1"
+
+permissions: {}
+
+jobs:
+  scan:
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.7.1
+    with:
+      scan-args: |-
+        --lockfile=uv.lock
+      fail-on-vuln: true
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
