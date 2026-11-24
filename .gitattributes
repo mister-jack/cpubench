@@ -1,0 +1,2 @@
+*.sh text eol=lf
+ci/BUNDLE_README.txt text eol=lf

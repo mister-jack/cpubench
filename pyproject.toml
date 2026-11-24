@@ -1,0 +1,14 @@
+[project]
+name = "cpubench"
+version = "0.1.0"
+description = "Mac stress test and monitoring scripts (ffmpeg libx264 load, CPU/GPU/temperature graphs)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.8",
+    "psutil>=5.9",
+]
+
+# Scripts are run directly (python mac_stress_test.py); nothing to build or install.
+[tool.uv]
+package = false
