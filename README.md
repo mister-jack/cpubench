@@ -24,7 +24,32 @@ recorded.
 * Python 3 with psutil and matplotlib
 * ffmpeg with libx264 (Homebrew's ffmpeg has it)
 
-**SETUP (once)**
+**SETUP WITHOUT HOMEBREW (once)**
+
+  On an Apple Silicon Mac, `bootstrap.sh` sets everything up inside this
+  folder using [uv](https://github.com/astral-sh/uv). No Homebrew or system
+  Python needed.
+
+1. Put two macOS arm64 binaries in the `bin` folder here:
+   * `bin/uv`, from `uv-aarch64-apple-darwin.tar.gz` on uv's releases page
+   * `bin/ffmpeg`, any arm64 build that includes libx264
+2. Run, without sudo:
+   ```
+   ./bootstrap.sh
+   ```
+   It checks both binaries run and that ffmpeg has libx264, downloads a
+   standalone Python into `.python/`, installs the packages pinned in
+   `uv.lock` into `.venv/`, and writes three launchers: `./stress-test`,
+   `./app-monitor` and `./ffmpeg-hour-test`. The launchers use that Python
+   and `bin/ffmpeg`, never ones installed on the Mac.
+3. Run the test with `sudo ./stress-test`. It takes the same options as
+   `mac_stress_test.py` below.
+
+  If macOS won't run a binary you downloaded with a browser, bootstrap stops
+  and shows the command that clears its quarantine flag, e.g.
+  `xattr -d com.apple.quarantine bin/ffmpeg`
+
+**SETUP WITH HOMEBREW (once)**
 1. Install Homebrew from https://brew.sh if you don't have it, then:
    brew install python ffmpeg
 2. Make a Python environment with the two packages:

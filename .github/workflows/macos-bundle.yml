@@ -21,9 +21,6 @@ concurrency:
 
 env:
   PYTHON_VERSION: "3.13"
-  FFMPEG_VERSION: "8.1.3"
-  # x264 has no releases; this is the tip of its "stable" branch.
-  X264_COMMIT: b35605ace3ddf7c1a5d67a2eb553f034aef41d55
   # Oldest macOS the bundle runs on (11.0 is the first Apple Silicon release).
   MACOSX_DEPLOYMENT_TARGET: "11.0"
 
@@ -45,54 +42,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build/ffmpeg-out
-          key: ffmpeg-arm64-${{ env.FFMPEG_VERSION }}-x264-${{ env.X264_COMMIT }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}-v1
+          key: ffmpeg-arm64-${{ hashFiles('ci/build-ffmpeg.sh') }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}
 
       - name: Build static x264 and ffmpeg
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        run: |
-          set -euxo pipefail
-          command -v pkg-config >/dev/null || brew install pkgconf
-          root="$PWD/build"
-          prefix="$root/prefix"
-          mkdir -p "$root/src" "$root/ffmpeg-out"
-          jobs=$(sysctl -n hw.ncpu)
-
-          # x264 (static library only)
-          git init -q "$root/src/x264"
-          git -C "$root/src/x264" fetch -q --depth 1 https://code.videolan.org/videolan/x264.git "$X264_COMMIT"
-          git -C "$root/src/x264" checkout -q FETCH_HEAD
-          (
-            cd "$root/src/x264"
-            ./configure --prefix="$prefix" --enable-static --enable-pic --disable-cli
-            make -j"$jobs"
-            make install
-          )
-
-          # ffmpeg: only what the scripts use (lavfi test source -> libx264 -> null).
-          # --disable-autodetect keeps Homebrew libraries on the runner out of the
-          # binary, so it depends on nothing but macOS itself.
-          curl -fsSL "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" -o "$root/src/ffmpeg.tar.xz"
-          mkdir "$root/src/ffmpeg"
-          tar -xf "$root/src/ffmpeg.tar.xz" -C "$root/src/ffmpeg" --strip-components 1
-          (
-            cd "$root/src/ffmpeg"
-            PKG_CONFIG_PATH="$prefix/lib/pkgconfig" ./configure \
-              --prefix="$prefix" \
-              --arch=arm64 \
-              --enable-gpl --enable-libx264 \
-              --enable-static --disable-shared \
-              --pkg-config-flags=--static \
-              --disable-autodetect \
-              --disable-doc --disable-debug \
-              --disable-ffplay --disable-ffprobe \
-              --disable-network --disable-indevs --disable-outdevs
-            make -j"$jobs"
-          )
-          cp "$root/src/ffmpeg/ffmpeg" "$root/ffmpeg-out/ffmpeg"
-          strip "$root/ffmpeg-out/ffmpeg"
-          # strip invalidates the linker's ad-hoc signature; arm64 Macs refuse
-          # to run unsigned code, so sign again.
-          codesign --force --sign - "$root/ffmpeg-out/ffmpeg"
+        run: sh ci/build-ffmpeg.sh build/ffmpeg-out
 
       - name: Check ffmpeg
         run: |
@@ -162,10 +116,9 @@ jobs:
           {
             echo "cpubench commit: $GITHUB_SHA ($GITHUB_REF_NAME)"
             echo "built: $(date -u +%Y-%m-%dT%H:%M:%SZ) on $(sw_vers -productName) $(sw_vers -productVersion) $(uname -m)"
-            echo "minimum macOS: $MACOSX_DEPLOYMENT_TARGET"
             echo "python: $("$bundle/python/bin/python3" -c 'import sys; print(sys.version)')"
             echo "ffmpeg: $("$bundle/bin/ffmpeg" -hide_banner -version | head -n 1)"
-            echo "x264: commit $X264_COMMIT"
+            cat build/ffmpeg-out/ffmpeg-build-info.txt
             echo
             echo "python packages:"
             uv pip list --python "$bundle/python/bin/python3" | sed 's/^/  /'

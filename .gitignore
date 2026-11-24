@@ -1,0 +1,13 @@
+# Created by ./bootstrap.sh
+/.python/
+/.venv/
+/.uv-cache/
+/stress-test
+/app-monitor
+/ffmpeg-hour-test
+
+# CI build output
+/build/
+/dist/
+
+__pycache__/
