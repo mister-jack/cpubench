@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds a static arm64 ffmpeg with libx264 from source and puts it in OUTDIR.
-# Used by the CI workflow and by `./bootstrap.sh --build-ffmpeg`.
+# Used by the CI workflow. Can also be run by hand to make bin/ffmpeg:
+#   sh ci/build-ffmpeg.sh bin
 #
 #   ci/build-ffmpeg.sh OUTDIR
 #

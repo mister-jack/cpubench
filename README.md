@@ -30,25 +30,24 @@ recorded.
   folder using [uv](https://github.com/astral-sh/uv). No Homebrew or system
   Python needed.
 
-1. Put the uv binary for macOS arm64 (from `uv-aarch64-apple-darwin.tar.gz`
-   on uv's releases page) at `bin/uv` in this folder.
+1. Put two macOS arm64 binaries in the `bin` folder here:
+   * `bin/uv`, from `uv-aarch64-apple-darwin.tar.gz` on uv's releases page
+   * `bin/ffmpeg`, any arm64 build that includes libx264
 2. Run, without sudo:
    ```
    ./bootstrap.sh
    ```
-   It downloads a standalone Python into `.python/`, installs the packages
-   pinned in `uv.lock` into `.venv/`, and writes three launchers:
-   `./stress-test`, `./app-monitor` and `./ffmpeg-hour-test`.
-3. ffmpeg: bootstrap uses `bin/ffmpeg` if you put one there (it must have
-   libx264), else an ffmpeg already on the Mac. If there is none,
-   `./bootstrap.sh --build-ffmpeg` builds `bin/ffmpeg` from source. That
-   needs Apple's Command Line Tools (`xcode-select --install`) and takes
-   5-10 minutes.
-4. Run the test with `sudo ./stress-test`. It takes the same options as
+   It checks both binaries run and that ffmpeg has libx264, downloads a
+   standalone Python into `.python/`, installs the packages pinned in
+   `uv.lock` into `.venv/`, and writes three launchers: `./stress-test`,
+   `./app-monitor` and `./ffmpeg-hour-test`. The launchers use that Python
+   and `bin/ffmpeg`, never ones installed on the Mac.
+3. Run the test with `sudo ./stress-test`. It takes the same options as
    `mac_stress_test.py` below.
 
-  If macOS refuses to run a binary you downloaded with a browser, clear its
-  quarantine flag: `xattr -d com.apple.quarantine bin/uv`
+  If macOS won't run a binary you downloaded with a browser, bootstrap stops
+  and shows the command that clears its quarantine flag, e.g.
+  `xattr -d com.apple.quarantine bin/ffmpeg`
 
 **SETUP WITH HOMEBREW (once)**
 1. Install Homebrew from https://brew.sh if you don't have it, then:
